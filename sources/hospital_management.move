@@ -1,4 +1,3 @@
-#[allow(unused_const)]
 module hospital_management::hospital_management {
     use sui::transfer;
     use sui::sui::SUI;
@@ -8,14 +7,44 @@ module hospital_management::hospital_management {
     use sui::balance::{Self, Balance};
     use sui::tx_context::{Self, TxContext};
     use sui::table::{Self, Table};
+    use sui::event;
 
     // Errors
     const EInsufficientBalance: u64 = 1;
-    const ENotHospital: u64 = 2;
-    const ENotStaff: u64 = 3;
-    const ENotPatient: u64 = 4;
-    const ENotAppointment: u64 = 5;
-    const ENotAuthorized: u64 = 6;
+    const ENotAuthorized: u64 = 2;
+    const EInvalidRole: u64 = 3;
+    const EInvalidQuantity: u64 = 4;
+
+    // Events
+    struct AddPatient has copy, drop {
+        hospital_id: ID,
+        patient_id: ID,
+    }
+
+    struct AddStaff has copy, drop {
+        hospital_id: ID,
+        staff_id: ID,
+    }
+
+    struct AddAppointment has copy, drop {
+        hospital_id: ID,
+        appointment_id: ID,
+    }
+
+    struct CancelAppointment has copy, drop {
+        hospital_id: ID,
+        appointment_id: ID,
+    }
+
+    struct AddInventoryItem has copy, drop {
+        hospital_id: ID,
+        item_id: ID,
+    }
+
+    struct RemoveInventoryItem has copy, drop {
+        hospital_id: ID,
+        item_id: ID,
+    }
 
     // Structs
     struct Hospital has key, store {
@@ -51,7 +80,7 @@ module hospital_management::hospital_management {
         age: u64,
         address: String,
         principal: address,
-        medicalHistory: String,
+        medicalHistory: String, // Should be encrypted or stored off-chain in real-world scenarios
     }
 
     struct Appointment has key, store {
@@ -68,13 +97,21 @@ module hospital_management::hospital_management {
         name: String,
         quantity: u64,
         unit_price: u64,
+        total_cost: u64,
+    }
+
+    // Utility Functions
+
+    fun authorize(hospital: &Hospital, ctx: &TxContext) {
+        assert!(tx_context::sender(ctx) == hospital.principal, ENotAuthorized);
+    }
+
+    fun authorize_staff(staff: &Staff, ctx: &TxContext) {
+        assert!(tx_context::sender(ctx) == staff.principal, ENotAuthorized);
     }
 
     // Hospital methods
 
-    /// Adds information about a new hospital.
-    ///
-    /// Returns a `HospitalCap` object representing the capability to manage the hospital.
     public fun add_hospital_info(
         name: String,
         address: String,
@@ -101,9 +138,6 @@ module hospital_management::hospital_management {
         }
     }
 
-    /// Deposits funds into the hospital's balance.
-    ///
-    /// Takes a `Coin<SUI>` amount and adds it to the hospital's balance.
     public fun deposit(
         hospital: &mut Hospital,
         amount: Coin<SUI>,
@@ -114,18 +148,17 @@ module hospital_management::hospital_management {
 
     // Staff methods
 
-    /// Adds information about a new staff member.
-    ///
-    /// Returns a `Staff` object representing the newly added staff member.
     public fun add_staff_info(
+        hospital: &mut Hospital,
         name: String,
         role: String,
         department: String,
         hireDate: String,
         ctx: &mut TxContext
     ) : Staff {
+        authorize(hospital, ctx);
         let id = object::new(ctx);
-        Staff {
+        let staff = Staff {
             id,
             name,
             role,
@@ -133,12 +166,15 @@ module hospital_management::hospital_management {
             balance: balance::zero<SUI>(),
             department,
             hireDate,
-        }
+        };
+        table::add(&mut hospital.staff, object::uid_to_inner(&staff.id), staff);
+        event::emit_event(AddStaff {
+            hospital_id: object::uid_to_inner(&hospital.id),
+            staff_id: object::uid_to_inner(&staff.id),
+        });
+        staff
     }
 
-    /// Updates information about an existing staff member.
-    ///
-    /// Requires authorization from the staff member themselves.
     public fun update_staff_info(
         staff: &mut Staff,
         name: String,
@@ -147,18 +183,13 @@ module hospital_management::hospital_management {
         hireDate: String,
         ctx: &mut TxContext
     ) {
-        assert!(staff.principal == tx_context::sender(ctx), ENotAuthorized);
+        authorize_staff(staff, ctx);
         staff.name = name;
         staff.role = role;
         staff.department = department;
         staff.hireDate = hireDate;
     }
 
-    // Pay staff salary
-
-    /// Pays salary to a staff member from the hospital's balance.
-    ///
-    /// Takes an `amount` to be paid and transfers it from hospital to the staff member.
     public fun pay_staff(
         hospital: &mut Hospital,
         staff: &mut Staff,
@@ -172,30 +203,32 @@ module hospital_management::hospital_management {
 
     // Patient methods
 
-    /// Adds information about a new patient.
-    ///
-    /// Returns a `Patient` object representing the newly added patient.
     public fun add_patient_info(
+        hospital: &mut Hospital,
         name: String,
         age: u64,
         address: String,
         medicalHistory: String,
         ctx: &mut TxContext
     ) : Patient {
+        authorize(hospital, ctx);
         let id = object::new(ctx);
-        Patient {
+        let patient = Patient {
             id,
             name,
             age,
             address,
             principal: tx_context::sender(ctx),
-            medicalHistory,
-        }
+            medicalHistory, // Should be encrypted or stored off-chain in real-world scenarios
+        };
+        table::add(&mut hospital.patients, object::uid_to_inner(&patient.id), patient);
+        event::emit_event(AddPatient {
+            hospital_id: object::uid_to_inner(&hospital.id),
+            patient_id: object::uid_to_inner(&patient.id),
+        });
+        patient
     }
 
-    /// Updates information about an existing patient.
-    ///
-    /// Requires authorization from the patient themselves.
     public fun update_patient_info(
         patient: &mut Patient,
         name: String,
@@ -204,18 +237,25 @@ module hospital_management::hospital_management {
         medicalHistory: String,
         ctx: &mut TxContext
     ) {
-        assert!(patient.principal == tx_context::sender(ctx), ENotAuthorized);
+        authorize_staff(patient, ctx); // Assuming staff roles include doctors with relevant permissions
         patient.name = name;
         patient.age = age;
         patient.address = address;
-        patient.medicalHistory = medicalHistory;
+        patient.medicalHistory = medicalHistory; // Should be encrypted or stored off-chain in real-world scenarios
+    }
+
+    public fun discharge_patient(
+        hospital: &mut Hospital,
+        patient_id: ID,
+        ctx: &mut TxContext
+    ) {
+        authorize(hospital, ctx);
+        let patient = table::remove(&mut hospital.patients, patient_id);
+        object::delete(patient.id);
     }
 
     // Appointment methods
 
-    /// Adds information about a new appointment.
-    ///
-    /// Returns an `Appointment` object representing the newly added appointment.
     public fun add_appointment_info(
         hospital: &mut Hospital,
         patient: &mut Patient,
@@ -225,6 +265,7 @@ module hospital_management::hospital_management {
         description: String,
         ctx: &mut TxContext
     ) {
+        authorize(hospital, ctx);
         let id = object::new(ctx);
         let appointment = Appointment {
             id,
@@ -234,34 +275,29 @@ module hospital_management::hospital_management {
             time,
             description,
         };
-
-        table::add<ID, Appointment>(&mut hospital.appointments, object::uid_to_inner(&appointment.id), appointment);
+        table::add(&mut hospital.appointments, object::uid_to_inner(&appointment.id), appointment);
+        event::emit_event(AddAppointment {
+            hospital_id: object::uid_to_inner(&hospital.id),
+            appointment_id: object::uid_to_inner(&appointment.id),
+        });
     }
 
-    /// Cancels an existing appointment.
-    ///
-    /// Removes the appointment from hospital's records and deletes associated data.
     public fun cancel_appointment(
         hospital: &mut Hospital,
-        appointment: ID,
+        appointment_id: ID,
+        ctx: &mut TxContext
     ) {
-        let appointment = table::remove(&mut hospital.appointments, appointment);
-        let Appointment {
-            id,
-            patient: _,
-            doctor: _,
-            date: _,
-            time: _,
-            description: _,
-        } = appointment;
-        object::delete(id);
+        authorize(hospital, ctx);
+        let appointment = table::remove(&mut hospital.appointments, appointment_id);
+        event::emit_event(CancelAppointment {
+            hospital_id: object::uid_to_inner(&hospital.id),
+            appointment_id: appointment_id,
+        });
+        object::delete(appointment.id);
     }
 
     // Inventory methods
 
-    /// Adds a new item to hospital's inventory.
-    ///
-    /// Returns nothing.
     public fun add_inventory_item(
         hospital: &mut Hospital,
         name: String,
@@ -269,69 +305,111 @@ module hospital_management::hospital_management {
         unit_price: u64,
         ctx: &mut TxContext
     ) {
+        authorize(hospital, ctx);
+        assert!(quantity > 0, EInvalidQuantity);
         let id = object::new(ctx);
+        let total_cost = quantity * unit_price;
         let item = InventoryItem {
             id,
             name,
             quantity,
             unit_price,
+            total_cost,
         };
-
-        table::add<ID, InventoryItem>(&mut hospital.inventory, object::uid_to_inner(&item.id), item);
+        table::add(&mut hospital.inventory, object::uid_to_inner(&item.id), item);
+        event::emit_event(AddInventoryItem {
+            hospital_id: object::uid_to_inner(&hospital.id),
+            item_id: object::uid_to_inner(&item.id),
+        });
     }
 
-    /// Updates an existing inventory item.
-    ///
-    /// Takes `item_id`, `name`, `quantity`, `unit_price` and updates corresponding item in inventory.
     public fun update_inventory_item(
         hospital: &mut Hospital,
         item_id: ID,
         name: String,
         quantity: u64,
         unit_price: u64,
+        ctx: &mut TxContext
+   
     ) {
-        let item = table::borrow_mut(&mut hospital.inventory, item_id);
+        authorize(hospital, ctx);
+        assert!(quantity > 0, EInvalidQuantity);
+        let mut item = table::borrow_mut(&mut hospital.inventory, item_id);
         item.name = name;
         item.quantity = quantity;
         item.unit_price = unit_price;
+        item.total_cost = quantity * unit_price;
     }
 
-    /// Removes an item from hospital's inventory.
-    ///
-    /// Deletes the item from inventory table and associated data.
     public fun remove_inventory_item(
         hospital: &mut Hospital,
         item_id: ID,
-    ) {
-        let item = table::remove(&mut hospital.inventory, item_id);
-        let InventoryItem { id, name: _, quantity: _, unit_price: _ } = item;
-        object::delete(id);
-    }
-
-    // Handle hospital expenses
-
-    /// Pays an expense from hospital's balance.
-    ///
-    /// Takes `amount` and transfers it out from hospital's balance.
-    public fun pay_expense(
-        hospital: &mut Hospital,
-        amount: u64,
         ctx: &mut TxContext
-    ) : Coin<SUI> {
-        assert!(balance::value(&hospital.balance) >= amount, EInsufficientBalance);
-        let payment = coin::take(&mut hospital.balance, amount, ctx);
-        payment
+    ) {
+        authorize(hospital, ctx);
+        let item = table::remove(&mut hospital.inventory, item_id);
+        event::emit_event(RemoveInventoryItem {
+            hospital_id: object::uid_to_inner(&hospital.id),
+            item_id: item_id,
+        });
+        object::delete(item.id);
     }
 
-    /// Discharges a patient from the hospital.
-    ///
-    /// Removes the patient from the hospital's patient table and deletes associated data.
-    public fun discharge_patient(
+    // Role-Based Access Control (RBAC)
+    struct Role has copy, drop, store {
+        id: u64,
+        name: String,
+        permissions: vector<String>,
+    }
+
+    public fun add_role(
         hospital: &mut Hospital,
-        patient_id: ID,
+        role_name: String,
+        permissions: vector<String>,
+        ctx: &mut TxContext
+    ) : Role {
+        authorize(hospital, ctx);
+        let role = Role {
+            id: vector::length(&hospital.staff),
+            name: role_name,
+            permissions,
+        };
+        // Add role to a persistent storage if necessary
+        role
+    }
+
+    public fun assign_role_to_staff(
+        hospital: &mut Hospital,
+        staff_id: ID,
+        role: Role,
+        ctx: &mut TxContext
     ) {
-        let patient = table::remove(&mut hospital.patients, patient_id);
-        let Patient { id, name: _, age: _, address: _, principal: _, medicalHistory: _ } = patient;
-        object::delete(id);
-    } 
+        authorize(hospital, ctx);
+        let mut staff = table::borrow_mut(&mut hospital.staff, staff_id);
+        // Assuming role is added to staff profile for role-based access control
+        // Implement the necessary logic to associate role with staff
+    }
+
+    // Utility Function for RBAC
+    fun has_permission(
+        hospital: &Hospital,
+        staff: &Staff,
+        permission: String
+    ) : bool {
+        // Implement the logic to check if the staff has the required permission
+        // This is a placeholder, assuming we have a way to check staff permissions
+        true
+    }
+
+    public fun execute_staff_action(
+        hospital: &Hospital,
+        staff: &Staff,
+        action: String,
+        ctx: &TxContext
+    ) {
+        if !has_permission(hospital, staff, action) {
+            assert!(false, ENotAuthorized);
+        }
+        // Proceed with the action if authorized
+    }
 }
