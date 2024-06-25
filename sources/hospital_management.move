@@ -16,6 +16,8 @@ module hospital_management::hospital_management {
     const ENotPatient: u64 = 4;
     const ENotAppointment: u64 = 5;
     const ENotAuthorized: u64 = 6;
+    const ERoomUnavailable: u64 = 7;
+    const ERoomNotFound: u64 = 8;
 
     // Structs
     struct Hospital has key, store {
@@ -27,6 +29,7 @@ module hospital_management::hospital_management {
         patients: Table<ID, Patient>,
         appointments: Table<ID, Appointment>,
         inventory: Table<ID, InventoryItem>,
+        rooms: Table<ID, Room>,
         principal: address,
     }
 
@@ -70,6 +73,26 @@ module hospital_management::hospital_management {
         unit_price: u64,
     }
 
+    struct Room has key, store {
+        id: UID,
+        room_number: String,
+        capacity: u64,
+        available: bool,
+    }
+
+    // Helper functions
+    fun is_authorized(principal: address, authorized: address) {
+        assert!(principal == authorized, ENotAuthorized);
+    }
+
+    fun add_patient_to_hospital(hospital: &mut Hospital, patient: Patient) {
+        table::add(&mut hospital.patients, object::uid_to_inner(&patient.id), patient);
+    }
+
+    fun add_staff_to_hospital(hospital: &mut Hospital, staff: Staff) {
+        table::add(&mut hospital.staff, object::uid_to_inner(&staff.id), staff);
+    }
+
     // Hospital methods
 
     /// Adds information about a new hospital.
@@ -92,6 +115,7 @@ module hospital_management::hospital_management {
             patients: table::new<ID, Patient>(ctx),
             appointments: table::new<ID, Appointment>(ctx),
             inventory: table::new<ID, InventoryItem>(ctx),
+            rooms: table::new<ID, Room>(ctx),
         };
         transfer::share_object(hospital);
 
@@ -125,7 +149,7 @@ module hospital_management::hospital_management {
         ctx: &mut TxContext
     ) : Staff {
         let id = object::new(ctx);
-        Staff {
+        let staff = Staff {
             id,
             name,
             role,
@@ -133,7 +157,9 @@ module hospital_management::hospital_management {
             balance: balance::zero<SUI>(),
             department,
             hireDate,
-        }
+        };
+        add_staff_to_hospital(&mut table::borrow_mut(&mut hospital.staff, id), staff);
+        staff
     }
 
     /// Updates information about an existing staff member.
@@ -147,7 +173,7 @@ module hospital_management::hospital_management {
         hireDate: String,
         ctx: &mut TxContext
     ) {
-        assert!(staff.principal == tx_context::sender(ctx), ENotAuthorized);
+        is_authorized(staff.principal, tx_context::sender(ctx));
         staff.name = name;
         staff.role = role;
         staff.department = department;
@@ -176,6 +202,7 @@ module hospital_management::hospital_management {
     ///
     /// Returns a `Patient` object representing the newly added patient.
     public fun add_patient_info(
+        hospital: &mut Hospital,
         name: String,
         age: u64,
         address: String,
@@ -183,14 +210,16 @@ module hospital_management::hospital_management {
         ctx: &mut TxContext
     ) : Patient {
         let id = object::new(ctx);
-        Patient {
+        let patient = Patient {
             id,
             name,
             age,
             address,
             principal: tx_context::sender(ctx),
             medicalHistory,
-        }
+        };
+        add_patient_to_hospital(hospital, patient);
+        patient
     }
 
     /// Updates information about an existing patient.
@@ -204,7 +233,7 @@ module hospital_management::hospital_management {
         medicalHistory: String,
         ctx: &mut TxContext
     ) {
-        assert!(patient.principal == tx_context::sender(ctx), ENotAuthorized);
+        is_authorized(patient.principal, tx_context::sender(ctx));
         patient.name = name;
         patient.age = age;
         patient.address = address;
@@ -308,6 +337,61 @@ module hospital_management::hospital_management {
         object::delete(id);
     }
 
+    // Room management methods
+
+    /// Adds a new room to the hospital.
+    ///
+    /// Returns a `Room` object representing the newly added room.
+    public fun add_room(
+        hospital: &mut Hospital,
+        room_number: String,
+        capacity: u64,
+        ctx: &mut TxContext
+    ) : Room {
+        let id = object::new(ctx);
+        let room = Room {
+            id,
+            room_number,
+            capacity,
+            available: true,
+        };
+        table::add<ID, Room>(&mut hospital.rooms, object::uid_to_inner(&room.id), room);
+        room
+    }
+
+    /// Updates the availability of a room.
+    ///
+    /// Takes `room_id` and `available` status to update the room availability.
+    public fun update_room_availability(
+        hospital: &mut Hospital,
+        room_id: ID,
+        available: bool,
+    ) {
+        let room = table::borrow_mut(&mut hospital.rooms, room_id);
+        room.available = available;
+    }
+
+    /// Assigns a room to a patient.
+    ///
+    /// Takes `room_id` and `patient_id` to assign the room to the patient.
+    public fun assign_room_to_patient(
+        hospital: &mut Hospital,
+        room_id: ID,
+        patient_id: ID,
+    ) {
+        let room = table::borrow_mut(&mut hospital.rooms, room_id);
+        assert!(room.available, ERoomUnavailable);
+
+        let patient = table::borrow(&hospital.patients, patient_id)
+            .expect(ENotPatient);
+
+        // Mark the room as unavailable
+        room.available = false;
+
+        // Logic for assigning room to patient can be extended here
+        // For example, updating a RoomAssignment table or patient record
+    }
+
     // Handle hospital expenses
 
     /// Pays an expense from hospital's balance.
@@ -333,5 +417,5 @@ module hospital_management::hospital_management {
         let patient = table::remove(&mut hospital.patients, patient_id);
         let Patient { id, name: _, age: _, address: _, principal: _, medicalHistory: _ } = patient;
         object::delete(id);
-    } 
+    }
 }
